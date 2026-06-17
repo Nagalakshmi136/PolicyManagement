@@ -1,0 +1,122 @@
+{
+  "realm": "policy-mgmt",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "refreshTokenMaxReuse": 0,
+
+  "roles": {
+    "realm": [
+      {
+        "name": "policy-reader",
+        "description": "Read-only access to policy data (GET endpoints)",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "policy-admin",
+        "description": "Full access — read and flag policies (GET + PATCH endpoints)",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+
+  "clients": [
+    {
+      "clientId": "policy-dashboard",
+      "name": "Policy Overview Dashboard (SPA)",
+      "description": "Public PKCE client for the front-end SPA",
+      "enabled": true,
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:4200/*",
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:4200",
+        "http://localhost:5173"
+      ],
+      "defaultClientScopes": ["openid", "profile", "email", "roles"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*##http://localhost:4200/*"
+      }
+    },
+    {
+      "clientId": "policy-management-api",
+      "name": "Policy Management BFF API",
+      "description": "Bearer-only resource server — validates JWT audience",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect"
+    }
+  ],
+
+  "users": [
+    {
+      "username": "reader-user",
+      "email": "reader@policymanagement.local",
+      "firstName": "Reader",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Reader1234!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["policy-reader"],
+      "clientRoles": {}
+    },
+    {
+      "username": "admin-user",
+      "email": "admin@policymanagement.local",
+      "firstName": "Admin",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Admin1234!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["policy-reader", "policy-admin"],
+      "clientRoles": {}
+    }
+  ],
+
+  "scopeMappings": [],
+  "clientScopeMappings": {},
+
+  "identityProviders": [],
+  "identityProviderMappers": [],
+
+  "components": {},
+  "internationalizationEnabled": false,
+  "supportedLocales": ["en"],
+  "defaultLocale": "en"
+}
