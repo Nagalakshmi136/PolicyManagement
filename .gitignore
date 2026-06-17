@@ -1,0 +1,117 @@
+## ----- .NET / ASP.NET Core -----
+
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]uild/
+[Pp]ublish/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+**/[Pp]ackages/
+!**/[Pp]ackages/build/
+*.nuspec
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# NuGet cache (do not ignore global NuGet cache — it lives outside the repo)
+nuget.config.user
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+coverage*/
+TestResults/
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+_ReSharper*/
+*.DotSettings.user
+
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+
+# Roslyn analyzers
+*.AnalyzerReference
+
+# ASP.NET Core scaffolding
+ScaffoldingReadMe.txt
+
+# Entity Framework Core migrations backup
+*.ef.bak
+
+## ----- Secrets & environment -----
+
+# Environment-specific secrets — NEVER commit
+.env
+*.env
+!.env.example
+
+# ASP.NET Core user secrets
+secrets.json
+appsettings.Development.json
+appsettings.Local.json
+
+## ----- Docker -----
+
+# Docker override files with local secrets
+docker-compose.override.yml
+docker-compose.local.yml
+
+## ----- OS -----
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+## ----- Misc tooling -----
+
+# Node (if any tooling uses it)
+node_modules/
+npm-debug.log*
+
+# JetBrains dotCover / dotTrace
+*.dcvr
+
+# BenchmarkDotNet
+BenchmarkDotNet.Artifacts/

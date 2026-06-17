@@ -1,0 +1,14 @@
+{
+  "name": "policy-management",
+  "version": "0.0.1",
+  "description": "PolicyManagement BFF — commit tooling",
+  "private": true,
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "husky": "^9.0.0"
+  }
+}
