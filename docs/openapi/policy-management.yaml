@@ -1,0 +1,1133 @@
+openapi: 3.1.0
+
+info:
+  title: Policy Management BFF API
+  version: 1.0.0
+  description: |
+    Backend-for-Frontend API for the Chubb APAC Policy Overview Dashboard.
+
+    This service aggregates and shapes insurance policy data for direct
+    front-end consumption. It exposes endpoints for listing, retrieving,
+    bulk-flagging, and summarising policies.
+
+    ## Authentication
+    All `/api/v1/policies/**` endpoints require a valid JWT Bearer token
+    issued by Keycloak via the OAuth2 Authorization Code + PKCE flow.
+    Health endpoints are anonymous.
+
+    ## Authorization
+    Two roles are defined in the Keycloak `policy-mgmt` realm:
+    - **policy-reader** — read-only access to all GET endpoints
+    - **policy-admin** — read access plus the ability to flag policies
+
+    ## Versioning
+    URL path versioning is used. All policy endpoints are under `/api/v1/`.
+    The `api-supported-versions` response header lists supported versions.
+
+    ## Error Responses
+    All errors use RFC 9457 `ProblemDetails` with `Content-Type: application/problem+json`.
+    Validation errors (400) include a camelCase-keyed `errors` map.
+    The `detail` field is omitted on 500 responses.
+
+    ## Pagination
+    The `page` (1-based, default 1) and `pageSize` (default 20, maximum 100)
+    parameters control pagination.
+
+    > **Deliberate deviation from raw requirements:** the requirements spec
+    > uses `size` as the page-size parameter name. This spec uses `pageSize`
+    > throughout for clarity and consistency with the implementation
+    > (`PaginationMeta`, FluentValidation, controllers).
+
+    `pageSize` exceeding 100 returns `400 Bad Request`.
+    A `page` value beyond `totalPages` returns an empty `data` array
+    with accurate `pagination` metadata — not a 404.
+
+    ## Sort Parameters
+    Sorting uses two separate parameters: `sortBy` (field name, default
+    `createdAt`) and `sortDirection` (`asc` | `desc`, default `asc`).
+
+    > **Deliberate deviation from raw requirements:** the requirements spec
+    > uses a single combined `sort=field,dir` parameter. The two-parameter
+    > convention was chosen for typed enum validation and better OpenAPI
+    > tooling support (Swagger UI, Spectral, code generators). See
+    > `docs/adr/ADR-008-sort-parameter-convention.md` for the full decision.
+
+    ## Premium Aggregation
+    `totalPremiumByLineOfBusiness` groups by both `lineOfBusiness` AND
+    `currency` to avoid misleading cross-currency totals. See ADR-009.
+
+    ## Expiring Soon
+    `expiringSoonCount` counts policies whose `expiryDate` falls within
+    30 calendar days of the current UTC date (configurable via
+    `Cache:ExpiringSoonDays`). See ADR-009.
+
+servers:
+  - url: http://localhost:5000
+    description: Local development
+
+security:
+  - openIdConnect: []
+
+tags:
+  - name: Policies
+    description: Insurance policy lifecycle operations
+  - name: Health
+    description: Service health and readiness probes
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # -------------------------------------------------------------------------
+  # GET /api/v1/policies
+  # -------------------------------------------------------------------------
+  /api/v1/policies:
+    get:
+      operationId: listPolicies
+      summary: List policies with pagination, filtering, and sorting
+      description: |
+        Returns a paginated list of policies. All filter parameters are
+        optional and combinable. An out-of-range `page` returns an empty
+        `data` array with accurate `pagination` metadata.
+      tags:
+        - Policies
+      security:
+        - openIdConnect: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/SortByParam'
+        - $ref: '#/components/parameters/SortDirectionParam'
+        - name: status
+          in: query
+          description: Filter by policy status
+          required: false
+          schema:
+            $ref: '#/components/schemas/PolicyStatus'
+        - name: lineOfBusiness
+          in: query
+          description: Filter by line of business
+          required: false
+          schema:
+            $ref: '#/components/schemas/LineOfBusiness'
+        - name: region
+          in: query
+          description: Filter by APAC region
+          required: false
+          schema:
+            $ref: '#/components/schemas/Region'
+        - name: effectiveDateFrom
+          in: query
+          description: Inclusive lower bound on effectiveDate (ISO 8601 date)
+          required: false
+          schema:
+            type: string
+            format: date
+            example: '2024-01-01'
+        - name: effectiveDateTo
+          in: query
+          description: Inclusive upper bound on effectiveDate (ISO 8601 date)
+          required: false
+          schema:
+            type: string
+            format: date
+            example: '2024-12-31'
+        - name: search
+          in: query
+          description: >
+            Free-text search across policyNumber, policyholderName,
+            and underwriter fields. Case-insensitive partial match.
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+            example: 'Tanaka'
+      responses:
+        '200':
+          description: Paginated list of policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedPolicyResponse'
+              example:
+                data:
+                  - id: '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+                    policyNumber: 'POL-000042'
+                    policyholderName: 'Tanaka Hiroshi'
+                    lineOfBusiness: 'Marine'
+                    status: 'Active'
+                    premiumAmount: 125000.00
+                    currency: 'JPY'
+                    effectiveDate: '2024-04-01'
+                    expiryDate: '2025-03-31'
+                    region: 'Japan'
+                    underwriter: 'Chen Wei'
+                    flaggedForReview: false
+                    createdAt: '2024-03-10T08:00:00Z'
+                    updatedAt: '2024-03-10T08:00:00Z'
+                pagination:
+                  page: 1
+                  pageSize: 20
+                  totalCount: 143
+                  totalPages: 8
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # GET /api/v1/policies/summary
+  # -------------------------------------------------------------------------
+  /api/v1/policies/summary:
+    get:
+      operationId: getPolicySummary
+      summary: Get aggregated policy statistics
+      description: |
+        Returns a snapshot of portfolio-level statistics:
+        - **countsByStatus** — policy counts for each status value
+        - **totalPremiumByLineOfBusiness** — total premium grouped by
+          both line of business AND currency to avoid misleading
+          cross-currency aggregation (see ADR-009)
+        - **expiringSoonCount** — number of policies whose `expiryDate`
+          falls within the next 30 calendar days
+      tags:
+        - Policies
+      security:
+        - openIdConnect: []
+      responses:
+        '200':
+          description: Aggregated policy statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySummaryStats'
+              example:
+                countsByStatus:
+                  Active: 98
+                  Expired: 34
+                  Pending: 12
+                  Cancelled: 7
+                totalPremiumByLineOfBusiness:
+                  - lineOfBusiness: 'Marine'
+                    currency: 'USD'
+                    totalPremium: 1250000.00
+                  - lineOfBusiness: 'Marine'
+                    currency: 'SGD'
+                    totalPremium: 430000.00
+                  - lineOfBusiness: 'Property'
+                    currency: 'USD'
+                    totalPremium: 3100000.00
+                expiringSoonCount: 11
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # GET /api/v1/policies/{id}
+  # -------------------------------------------------------------------------
+  /api/v1/policies/{id}:
+    get:
+      operationId: getPolicyById
+      summary: Get a single policy by its surrogate ID
+      description: |
+        Returns the full policy record for the given surrogate UUID.
+        Returns 404 if no policy with that ID exists.
+        Note: `id` is the surrogate UUID primary key, not `policyNumber`.
+      tags:
+        - Policies
+      security:
+        - openIdConnect: []
+      parameters:
+        - name: id
+          in: path
+          description: >
+            Surrogate UUID of the policy. Must be UUID format — does not
+            match the static path segments `/summary` or `/flag` (ASP.NET
+            Core resolves static segments before path templates, preventing
+            route ambiguity for OpenAPI tooling consumers).
+          required: true
+          schema:
+            type: string
+            format: uuid
+            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          example: '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+      responses:
+        '200':
+          description: Full policy record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # PATCH /api/v1/policies/flag
+  # -------------------------------------------------------------------------
+  /api/v1/policies/flag:
+    patch:
+      operationId: flagPoliciesForReview
+      summary: Bulk flag policies for review
+      description: |
+        Sets `flaggedForReview = true` on all policies whose IDs are
+        supplied in the request body.
+
+        **Partial-success semantics (see ADR-007):**
+        The operation flags all IDs that resolve to existing policies and
+        reports any IDs that were not found in `notFoundIds`. It does NOT
+        fail entirely if some IDs are missing.
+
+        **Idempotency:** Flagging an already-flagged policy is a no-op;
+        the ID still appears in `flaggedIds`.
+
+        **Authorization:** Requires the `policy-admin` Keycloak role.
+        A `policy-reader` token will receive `403 Forbidden`.
+      tags:
+        - Policies
+      security:
+        - openIdConnect: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagPoliciesRequest'
+            example:
+              policyIds:
+                - '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+                - 'a1b2c3d4-1234-5678-abcd-ef0123456789'
+      responses:
+        '200':
+          description: >
+            Partial-success response. `notFoundIds` is empty when all
+            supplied IDs resolved to existing policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlagPoliciesResponse'
+              example:
+                flaggedCount: 1
+                flaggedIds:
+                  - '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+                notFoundIds:
+                  - 'a1b2c3d4-1234-5678-abcd-ef0123456789'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # GET /health/live
+  # -------------------------------------------------------------------------
+  /health/live:
+    get:
+      operationId: healthLive
+      summary: Liveness probe
+      description: |
+        Returns 200 if the process is alive. Does not check external
+        dependencies. Used by Kubernetes `livenessProbe`.
+        This endpoint is anonymous — no JWT is required.
+      tags:
+        - Health
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: 'Healthy'
+        '503':
+          description: Process is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  # -------------------------------------------------------------------------
+  # GET /health/ready
+  # -------------------------------------------------------------------------
+  /health/ready:
+    get:
+      operationId: healthReady
+      summary: Readiness probe
+      description: |
+        Returns 200 if the service can handle traffic — specifically that
+        the SQL Server database is reachable. Used by Kubernetes
+        `readinessProbe`. This endpoint is anonymous — no JWT is required.
+      tags:
+        - Health
+      security: []
+      responses:
+        '200':
+          description: Service is ready to receive traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: 'Healthy'
+                duration: '00:00:00.0123456'
+                entries:
+                  database:
+                    status: 'Healthy'
+                    duration: '00:00:00.0089012'
+        '503':
+          description: Service is not ready (database unreachable or degraded)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+components:
+
+  # -------------------------------------------------------------------------
+  # Security Schemes
+  # -------------------------------------------------------------------------
+  securitySchemes:
+    openIdConnect:
+      type: openIdConnect
+      openIdConnectUrl: http://localhost:8180/realms/policy-mgmt/.well-known/openid-configuration
+      description: |
+        JWT Bearer tokens issued by Keycloak via OAuth2 Authorization Code
+        + PKCE flow. Include as `Authorization: Bearer <access_token>`.
+
+        Keycloak realm roles embedded in `realm_access.roles`:
+        - `policy-reader` — grants access to all GET policy endpoints
+        - `policy-admin` — grants access to all endpoints including PATCH /flag
+
+  # -------------------------------------------------------------------------
+  # Reusable Parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      description: 1-based page number
+      required: false
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        default: 1
+      example: 1
+
+    PageSizeParam:
+      name: pageSize
+      in: query
+      description: Number of items per page. Maximum 100. Exceeding 100 returns 400.
+      required: false
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 20
+      example: 20
+
+    SortByParam:
+      name: sortBy
+      in: query
+      description: >
+        Field to sort by. Unrecognised values return 400 Bad Request.
+        See ADR-008 for the sort parameter convention decision.
+      required: false
+      schema:
+        type: string
+        enum:
+          - policyNumber
+          - policyholderName
+          - lineOfBusiness
+          - status
+          - premiumAmount
+          - currency
+          - effectiveDate
+          - expiryDate
+          - region
+          - underwriter
+          - flaggedForReview
+          - createdAt
+          - updatedAt
+        default: createdAt
+      example: premiumAmount
+
+    SortDirectionParam:
+      name: sortDirection
+      in: query
+      description: Sort direction. See ADR-008.
+      required: false
+      schema:
+        type: string
+        enum:
+          - asc
+          - desc
+        default: asc
+      example: desc
+
+  # -------------------------------------------------------------------------
+  # Reusable Responses
+  # -------------------------------------------------------------------------
+  responses:
+    ValidationError:
+      description: >
+        Bad Request — one or more input parameters failed structural or
+        format validation. The `errors` map contains camelCase field names
+        as keys and arrays of error messages as values.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblemDetails'
+          example:
+            type: 'https://httpwg.org/specs/rfc9110.html#status.400'
+            title: 'Bad Request'
+            status: 400
+            detail: 'One or more validation errors occurred.'
+            instance: '/api/v1/policies'
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+            errors:
+              pageSize:
+                - 'pageSize must not exceed 100.'
+              sortBy:
+                - 'sortBy must be one of the allowed field names.'
+
+    Unauthorized:
+      description: >
+        Unauthorized — JWT token is missing, expired, or has an invalid
+        signature. The `WWW-Authenticate` response header indicates the
+        required Bearer scheme and realm.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: 'Bearer realm="http://localhost:8180/realms/policy-mgmt"'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'https://httpwg.org/specs/rfc9110.html#status.401'
+            title: 'Unauthorized'
+            status: 401
+            detail: 'Authentication credentials are missing or invalid.'
+            instance: '/api/v1/policies'
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+    Forbidden:
+      description: >
+        Forbidden — the token is valid but the caller does not hold the
+        required Keycloak role for this endpoint. For example, a
+        `policy-reader` token on `PATCH /api/v1/policies/flag`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'https://httpwg.org/specs/rfc9110.html#status.403'
+            title: 'Forbidden'
+            status: 403
+            detail: 'You do not have permission to perform this action.'
+            instance: '/api/v1/policies/flag'
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+    NotFound:
+      description: >
+        Not Found — no resource exists with the given identifier.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'https://httpwg.org/specs/rfc9110.html#status.404'
+            title: 'Not Found'
+            status: 404
+            detail: "Policy with identifier '3fa85f64-5717-4562-b3fc-2c963f66afa6' was not found."
+            instance: '/api/v1/policies/3fa85f64-5717-4562-b3fc-2c963f66afa6'
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+    UnprocessableEntity:
+      description: >
+        Unprocessable Entity — the request is structurally valid but
+        violates a domain business rule.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'https://httpwg.org/specs/rfc9110.html#status.422'
+            title: 'Unprocessable Entity'
+            status: 422
+            detail: 'Policy POL-000042 is already cancelled and cannot be flagged.'
+            instance: '/api/v1/policies/flag'
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+    InternalServerError:
+      description: >
+        Internal Server Error — an unexpected fault occurred. The `detail`
+        field is intentionally omitted to avoid leaking internal information.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'https://httpwg.org/specs/rfc9110.html#status.500'
+            title: 'Internal Server Error'
+            status: 500
+            instance: '/api/v1/policies'
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+  # -------------------------------------------------------------------------
+  # Schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # ------------------------------------------------------------------
+    # Enumeration types — referenced by policy fields and query params
+    # ------------------------------------------------------------------
+
+    PolicyStatus:
+      type: string
+      description: Lifecycle status of a policy
+      enum:
+        - Active
+        - Expired
+        - Pending
+        - Cancelled
+      example: Active
+
+    LineOfBusiness:
+      type: string
+      description: Insurance line of business
+      enum:
+        - Property
+        - Casualty
+        - A&H
+        - Marine
+      example: Marine
+
+    Region:
+      type: string
+      description: APAC region where the policy is underwritten
+      enum:
+        - Singapore
+        - Hong Kong
+        - Australia
+        - Japan
+        - Thailand
+        - Indonesia
+        - Malaysia
+        - Philippines
+      example: Japan
+
+    Currency:
+      type: string
+      description: ISO 4217 currency code
+      enum:
+        - USD
+        - SGD
+        - HKD
+        - AUD
+        - JPY
+        - THB
+      example: JPY
+
+    # ------------------------------------------------------------------
+    # Policy schemas
+    # ------------------------------------------------------------------
+
+    PolicyResponse:
+      type: object
+      description: Full policy record returned from GET /api/v1/policies/{id}
+      required:
+        - id
+        - policyNumber
+        - policyholderName
+        - lineOfBusiness
+        - status
+        - premiumAmount
+        - currency
+        - effectiveDate
+        - expiryDate
+        - region
+        - underwriter
+        - flaggedForReview
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Surrogate UUID primary key
+          example: '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+        policyNumber:
+          type: string
+          description: Unique human-facing business key in format POL-XXXXXX
+          pattern: '^POL-[A-Z0-9]{6}$'
+          example: 'POL-000042'
+        policyholderName:
+          type: string
+          maxLength: 200
+          description: Full name of the insured party
+          example: 'Tanaka Hiroshi'
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        status:
+          $ref: '#/components/schemas/PolicyStatus'
+        premiumAmount:
+          type: number
+          description: >
+            Annual premium amount. Stored server-side as decimal(18,2) —
+            never as a floating-point type. JSON serialised as a number;
+            use decimal arithmetic on the client to avoid rounding errors.
+          minimum: 1000
+          maximum: 5000000
+          example: 125000.00
+        currency:
+          $ref: '#/components/schemas/Currency'
+        effectiveDate:
+          type: string
+          format: date
+          description: Coverage start date (ISO 8601)
+          example: '2024-04-01'
+        expiryDate:
+          type: string
+          format: date
+          description: Coverage end date (ISO 8601)
+          example: '2025-03-31'
+        region:
+          $ref: '#/components/schemas/Region'
+        underwriter:
+          type: string
+          maxLength: 200
+          description: Name of the assigned underwriter
+          example: 'Chen Wei'
+        flaggedForReview:
+          type: boolean
+          default: false
+          description: >
+            Whether this policy has been flagged for manual review.
+            Set via PATCH /api/v1/policies/flag only — never directly.
+          example: false
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: UTC timestamp when the policy record was created
+          example: '2024-03-10T08:00:00Z'
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: UTC timestamp of the most recent update
+          example: '2024-03-10T08:00:00Z'
+
+    PolicySummaryItem:
+      type: object
+      description: >
+        Lean list-item representation of a policy returned in the paginated
+        list. Contains all fields required for dashboard display.
+      required:
+        - id
+        - policyNumber
+        - policyholderName
+        - lineOfBusiness
+        - status
+        - premiumAmount
+        - currency
+        - effectiveDate
+        - expiryDate
+        - region
+        - underwriter
+        - flaggedForReview
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+          example: '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+        policyNumber:
+          type: string
+          pattern: '^POL-[A-Z0-9]{6}$'
+          example: 'POL-000042'
+        policyholderName:
+          type: string
+          maxLength: 200
+          example: 'Tanaka Hiroshi'
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        status:
+          $ref: '#/components/schemas/PolicyStatus'
+        premiumAmount:
+          type: number
+          description: >
+            Annual premium amount. Stored as decimal(18,2); use decimal
+            arithmetic on the client to avoid rounding errors.
+          minimum: 1000
+          maximum: 5000000
+          example: 125000.00
+        currency:
+          $ref: '#/components/schemas/Currency'
+        effectiveDate:
+          type: string
+          format: date
+          example: '2024-04-01'
+        expiryDate:
+          type: string
+          format: date
+          example: '2025-03-31'
+        region:
+          $ref: '#/components/schemas/Region'
+        underwriter:
+          type: string
+          maxLength: 200
+          example: 'Chen Wei'
+        flaggedForReview:
+          type: boolean
+          default: false
+          example: false
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: UTC timestamp when the policy record was created
+          example: '2024-03-10T08:00:00Z'
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: UTC timestamp of the most recent update
+          example: '2024-03-10T08:00:00Z'
+
+    # ------------------------------------------------------------------
+    # Pagination schemas
+    # ------------------------------------------------------------------
+
+    PaginationMeta:
+      type: object
+      description: Pagination metadata included with every collection response
+      required:
+        - page
+        - pageSize
+        - totalCount
+        - totalPages
+      properties:
+        page:
+          type: integer
+          format: int32
+          description: Current page number (1-based)
+          example: 1
+        pageSize:
+          type: integer
+          format: int32
+          description: Number of items per page
+          example: 20
+        totalCount:
+          type: integer
+          format: int32
+          description: Total number of matching records across all pages
+          example: 143
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages (ceil(totalCount / pageSize))
+          example: 8
+
+    PagedPolicyResponse:
+      type: object
+      description: Paginated list of policy summary items
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicySummaryItem'
+          description: Array of policy summary items for the current page
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    # ------------------------------------------------------------------
+    # Summary schemas
+    # ------------------------------------------------------------------
+
+    PremiumByLineOfBusiness:
+      type: object
+      description: |
+        Total premium for a specific line of business in a specific currency.
+        Grouped by BOTH lineOfBusiness AND currency to avoid misleading
+        cross-currency aggregation. See ADR-009.
+      required:
+        - lineOfBusiness
+        - currency
+        - totalPremium
+      properties:
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        totalPremium:
+          type: number
+          description: >
+            Sum of premiumAmount for all matching policies.
+            Stored as decimal(18,2); use decimal arithmetic on the client.
+          minimum: 0
+          example: 1250000.00
+
+    PolicySummaryStats:
+      type: object
+      description: Aggregated portfolio-level statistics
+      required:
+        - countsByStatus
+        - totalPremiumByLineOfBusiness
+        - expiringSoonCount
+      properties:
+        countsByStatus:
+          type: object
+          description: Number of policies in each status
+          required:
+            - Active
+            - Expired
+            - Pending
+            - Cancelled
+          properties:
+            Active:
+              type: integer
+              format: int32
+              minimum: 0
+              example: 98
+            Expired:
+              type: integer
+              format: int32
+              minimum: 0
+              example: 34
+            Pending:
+              type: integer
+              format: int32
+              minimum: 0
+              example: 12
+            Cancelled:
+              type: integer
+              format: int32
+              minimum: 0
+              example: 7
+        totalPremiumByLineOfBusiness:
+          type: array
+          description: |
+            Premium totals grouped by line of business AND currency.
+            A single line of business may appear multiple times — once
+            per currency in which it has policies.
+          items:
+            $ref: '#/components/schemas/PremiumByLineOfBusiness'
+        expiringSoonCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Number of policies whose expiryDate falls within the next
+            30 calendar days from the current UTC date. The 30-day window
+            is configurable via Cache:ExpiringSoonDays. See ADR-009.
+          example: 11
+
+    # ------------------------------------------------------------------
+    # Flag schemas
+    # ------------------------------------------------------------------
+
+    FlagPoliciesRequest:
+      type: object
+      description: Request body for bulk flag operation
+      required:
+        - policyIds
+      properties:
+        policyIds:
+          type: array
+          description: >
+            Array of surrogate policy UUIDs to flag for review.
+            Must not be empty. Maximum 100 IDs per request.
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+          maxItems: 100
+          example:
+            - '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+            - 'a1b2c3d4-1234-5678-abcd-ef0123456789'
+
+    FlagPoliciesResponse:
+      type: object
+      description: |
+        Partial-success response from the bulk flag operation.
+        `notFoundIds` is an empty array when all supplied IDs resolved
+        to existing policies. See ADR-007 for the partial-success decision.
+      required:
+        - flaggedCount
+        - flaggedIds
+        - notFoundIds
+      properties:
+        flaggedCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Number of policies successfully flagged in this request
+          example: 1
+        flaggedIds:
+          type: array
+          description: >
+            IDs of policies that were flagged (or were already flagged —
+            idempotent). Order not guaranteed.
+          items:
+            type: string
+            format: uuid
+          example:
+            - '3fa85f64-5717-4562-b3fc-2c963f66afa6'
+        notFoundIds:
+          type: array
+          description: >
+            IDs supplied in the request that did not match any existing
+            policy. Empty array if all IDs resolved.
+          items:
+            type: string
+            format: uuid
+          example:
+            - 'a1b2c3d4-1234-5678-abcd-ef0123456789'
+
+    # ------------------------------------------------------------------
+    # Error schemas (RFC 9457 ProblemDetails)
+    # ------------------------------------------------------------------
+
+    ProblemDetails:
+      type: object
+      description: |
+        RFC 9457 Problem Details for HTTP APIs.
+        Used for all error responses (4xx, 5xx) with
+        Content-Type: application/problem+json.
+        The `detail` field is intentionally omitted on 500 responses.
+      required:
+        - type
+        - title
+        - status
+      properties:
+        type:
+          type: string
+          format: uri
+          description: >
+            URI reference identifying the problem type. Links to the
+            relevant RFC 9110 section for the HTTP status code.
+          example: 'https://httpwg.org/specs/rfc9110.html#status.404'
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type
+          example: 'Not Found'
+        status:
+          type: integer
+          format: int32
+          description: HTTP status code
+          example: 404
+        detail:
+          type: string
+          description: |
+            Human-readable explanation specific to this occurrence.
+            MUST be omitted on 500 Internal Server Error responses to
+            avoid leaking internal information.
+          example: "Policy with identifier 'POL-000042' was not found."
+        instance:
+          type: string
+          format: uri-reference
+          description: URI reference identifying the specific request that caused the error
+          example: '/api/v1/policies/3fa85f64-5717-4562-b3fc-2c963f66afa6'
+        traceId:
+          type: string
+          description: Distributed trace ID for correlating this error with server logs
+          example: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+    ValidationProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          description: |
+            Extended ProblemDetails for 400 Bad Request responses.
+            Adds a field-keyed `errors` map. Field names use camelCase
+            matching the JSON API request contract.
+          required:
+            - errors
+          properties:
+            errors:
+              type: object
+              description: |
+                Map of field name (camelCase) to array of validation
+                error messages. Only present on 400 responses.
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+              example:
+                pageSize:
+                  - 'pageSize must not exceed 100.'
+                sortBy:
+                  - 'sortBy must be one of the allowed field names.'
+                effectiveDateFrom:
+                  - 'effectiveDateFrom must be a valid ISO 8601 date.'
+
+    # ------------------------------------------------------------------
+    # Health schema
+    # ------------------------------------------------------------------
+
+    HealthResponse:
+      type: object
+      description: Health check response from /health/live or /health/ready
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - Healthy
+            - Degraded
+            - Unhealthy
+          example: Healthy
+        duration:
+          type: string
+          description: Total time taken for all health checks (.NET TimeSpan format)
+          pattern: '^[0-9]+:[0-5][0-9]:[0-5][0-9](\.[0-9]+)?$'
+          example: '00:00:00.0123456'
+        entries:
+          type: object
+          description: Per-check results. Present on /health/ready only.
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - Healthy
+                  - Degraded
+                  - Unhealthy
+              description:
+                type: string
+              duration:
+                type: string
