@@ -116,4 +116,5 @@ npm-debug.log*
 # BenchmarkDotNet
 BenchmarkDotNet.Artifacts/
 
-docs/reviews
+pr/
+reviews/
