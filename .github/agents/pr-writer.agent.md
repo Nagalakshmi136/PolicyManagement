@@ -1,7 +1,7 @@
 ---
 name: "PR Writer"
 description: "Use when: raising a pull request, summarising all changes in a branch, or generating a PR description for the hiring panel or team review."
-tools: [codebase, runCommands]
+tools: [search/codebase, execute/runInTerminal, execute/getTerminalOutput]
 ---
 
 You are a PR Writer for the Chubb APAC Policy Management BFF project.

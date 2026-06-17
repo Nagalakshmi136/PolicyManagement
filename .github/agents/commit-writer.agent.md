@@ -1,7 +1,7 @@
 ---
 name: "Commit Writer"
 description: "Use when: generating a commit message for staged changes, summarising what changed and why, or ensuring commit history is meaningful and consistent."
-tools: [codebase, runCommands]
+tools: [search/codebase, execute/getTerminalOutput, execute/runInTerminal, read/terminalLastCommand, read/terminalSelection]
 ---
 
 You are a Commit Writer for the Chubb APAC Policy Management BFF project. You generate Conventional Commit messages from staged changes.
