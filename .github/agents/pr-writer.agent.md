@@ -65,3 +65,36 @@ Anything intentionally deferred, in priority order, with brief reasoning.
 3. Wait for all services healthy (~60 seconds)
 4. Obtain test token from Keycloak
 5. Call GET http://localhost:5000/api/v1/policies
+
+---
+
+## Output Storage
+
+After producing the PR description, save it to `docs/pr/` as a Markdown file.
+
+### File naming
+Derive the name from the current branch name:
+
+| Branch name | File name |
+|---|---|
+| `feature/get-policies` | `feature-get-policies-YYYY-MM-DD.md` |
+| `feat/bulk-flag` | `feat-bulk-flag-YYYY-MM-DD.md` |
+| `fix/auth-wiring` | `fix-auth-wiring-YYYY-MM-DD.md` |
+| detached HEAD / unknown | `pr-YYYY-MM-DD.md` |
+
+Rules:
+- Replace `/` with `-` in the branch name segment.
+- Use today's date (UTC) in the file name.
+- If a file with the same name already exists, append `-2`, `-3`, etc. rather than overwriting.
+- Create the `docs/pr/` directory if it does not already exist.
+
+### File contents
+The saved file must contain exactly two things in order:
+
+```
+# <PR Title>
+
+<full PR description — identical to what was shown in chat>
+```
+
+The PR title should be a concise conventional-commit-style sentence (e.g. `feat: implement GET /policies endpoint with filtering, sorting, and pagination`).
